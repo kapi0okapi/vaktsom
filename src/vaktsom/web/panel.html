@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="nb">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vaktsom - badevaktpost</title>
+<link rel="stylesheet" href="/static/app.css" />
+<style>
+  body { background: #0f1720; color: #fff; overflow: hidden; }
+  .top { display: flex; align-items: center; gap: 16px; padding: 18px 26px; }
+  .top .brand { font-weight: 700; font-size: 1.2rem; }
+  .top .post { color: #9fb0c2; font-size: 1.05rem; }
+  .top .spacer { flex: 1; }
+  .top .clock { font: 600 1.4rem var(--mono); }
+  .idle { position: absolute; inset: 76px 0 70px 0; padding: 0 26px; }
+  .idle svg { width: 100%; height: 100%; }
+  .foot { position: absolute; left: 0; right: 0; bottom: 0; height: 70px; display: flex; align-items: center; gap: 22px; padding: 0 26px; color: #c8d3de; font-size: 1.05rem; }
+  .foot .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--ok); display: inline-block; margin-right: 10px; vertical-align: -2px; }
+  .foot .dot.warn { background: var(--warn); }
+  .alarmview { position: absolute; inset: 0; display: none; grid-template-columns: 1.1fr 1fr; gap: 24px; padding: 28px; background: var(--alarm); }
+  .alarmview.pre { background: #b86a00; }
+  .alarmview.acked { background: #5b1c20; }
+  body.alarming .alarmview { display: grid; }
+  .alarmview h1 { margin: 0; font-size: 4.2rem; line-height: 1; letter-spacing: -0.02em; }
+  .alarmview .what { font-size: 1.7rem; font-weight: 650; margin-top: 14px; }
+  .alarmview .where { font-size: 2.6rem; font-weight: 800; margin-top: 18px; line-height: 1.15; }
+  .alarmview .time { font: 600 1.6rem var(--mono); margin-top: 14px; opacity: 0.92; }
+  .alarmview .ack { margin-top: 30px; font-size: 2.2rem; font-weight: 800; padding: 22px 0; width: 100%; border-radius: 16px; border: 0; background: #fff; color: var(--alarm); }
+  .alarmview.acked .ack { display: none; }
+  .alarmview .ackedby { display: none; margin-top: 30px; font-size: 1.6rem; font-weight: 700; }
+  .alarmview.acked .ackedby { display: block; }
+  .alarmview .right { display: grid; grid-template-rows: 1fr 1fr; gap: 18px; min-height: 0; }
+  .alarmview .right > div { background: rgb(0 0 0 / 0.25); border-radius: 14px; overflow: hidden; min-height: 0; }
+  .alarmview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .alarmview svg { width: 100%; height: 100%; display: block; }
+  .unlock { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgb(15 23 32 / 0.92); font-size: 1.6rem; z-index: 5; cursor: pointer; }
+  .more { position: absolute; right: 28px; bottom: 22px; font-size: 1.1rem; font-weight: 700; opacity: 0.9; }
+  .alarmview.system { background: #3d4652; }
+  .offline { position: absolute; inset: 0; z-index: 4; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; background: #8a4b00; text-align: center; padding: 40px; }
+  .offline[hidden] { display: none; }
+  .offline strong { font-size: 3.4rem; line-height: 1.05; letter-spacing: -0.02em; }
+  .offline span { font-size: 1.6rem; opacity: 0.95; }
+</style>
+</head>
+<body>
+<div class="top"><span class="brand">Vaktsom</span><span class="post" id="post"></span><span class="spacer"></span><span class="clock" id="clock"></span></div>
+<div class="idle"><svg id="map"></svg></div>
+<div class="foot"><span><span class="dot" id="dot"></span><span id="statusText">Overvåking aktiv</span></span><span id="detail"></span></div>
+<div class="alarmview" id="view">
+  <div>
+    <h1 id="title">ALARM</h1>
+    <div class="what" id="what"></div>
+    <div class="where" id="where"></div>
+    <div class="time" id="time"></div>
+    <button class="ack" id="ack">KVITTER</button>
+    <div class="ackedby" id="ackedby"></div>
+  </div>
+  <div class="right"><div><svg id="amap"></svg></div><div><img id="cam" alt="" /></div></div>
+  <div class="more" id="more"></div>
+</div>
+<div class="offline" id="offline" hidden><strong>Ingen kontakt med Vaktsom</strong><span>Overvåk uten systemet til kontakten er tilbake.</span></div>
+<div class="unlock" id="unlock">Trykk for å aktivere alarmlyd</div>
+<script type="module">
+import { T, loadConfig, connect, clock, since, PoolMap, Siren } from "/static/common.js";
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const only = params.get("basins")?.split(",") || null;
+const name = params.get("name") || "Badevaktpost";
+const cfg = await loadConfig();
+$("post").textContent = `${name} · ${cfg.site}`;
+clock($("clock"));
+const map = new PoolMap($("map"), cfg, { basins: only });
+const amap = new PoolMap($("amap"), cfg, { basins: only, cameras: false });
+const siren = new Siren();
+$("unlock").onclick = () => { siren.unlock(); $("unlock").remove(); };
+let current = null;
+let beeper = null;
+const live = connect("panel", name, (m) => { if (m.type === "state") render(m); }, (ok) => {
+  $("offline").hidden = ok;
+  clearInterval(beeper);
+  if (!ok) { siren.stop(); beeper = setInterval(() => siren.beep(520, 0.4, 0.15), 10000); }
+});
+$("ack").onclick = () => current && live.send({ type: "ack", alarm_id: current.id });
+
+function render(s) {
+  map.update(s); amap.update(s);
+  const mine = s.alarms.filter((a) => !only || only.includes(a.basin_id)).sort((a, b) => (b.severity === "alarm") - (a.severity === "alarm") || a.raised_at - b.raised_at);
+  const cov = Object.entries(s.coverage).filter(([b]) => !only || only.includes(b));
+  const weak = cov.filter(([, c]) => c.state === "degraded" || c.state === "down");
+  $("dot").className = `dot${weak.length ? " warn" : ""}`;
+  const modes = [...new Set(Object.entries(s.modes || {}).filter(([b]) => !only || only.includes(b)).flatMap(([, m]) => m))];
+  $("statusText").textContent = modes.length ? `${modes.map((m) => T.mode[m] || m).join(", ")}: redusert deteksjon` : weak.length ? "Redusert dekning" : "Overvåking aktiv";
+  const cams = Object.values(s.cameras);
+  $("detail").textContent = `${cams.filter((c) => c.state === "ok").length}/${cams.length} kameraer · ${s.persons.filter((p) => p.basin && (!only || only.includes(p.basin))).length} badende`;
+  if (!mine.length) { document.body.classList.remove("alarming"); siren.stop(); current = null; return; }
+  const a = mine[0];
+  current = a;
+  document.body.classList.add("alarming");
+  const view = $("view");
+  view.className = `alarmview${a.severity === "pre_alarm" ? " pre" : ""}${a.severity === "system" ? " system" : ""}${a.ack_at ? " acked" : ""}`;
+  $("title").textContent = { pre_alarm: "FORVARSEL", system: "SYSTEMFEIL" }[a.severity] || "ALARM";
+  $("what").textContent = T.kind[a.kind] || a.kind;
+  $("where").textContent = a.label;
+  $("time").textContent = `${since(a.onset)} siden start`;
+  $("ackedby").textContent = a.ack_at ? `Kvittert av ${a.ack_by}` : "";
+  $("more").textContent = mine.length > 1 ? `+ ${mine.length - 1} til` : "";
+  const cam = a.cameras?.[0];
+  if (cam && $("cam").dataset.cam !== cam) { $("cam").dataset.cam = cam; $("cam").src = `/api/cameras/${cam}/mjpeg?width=960&fps=5`; }
+  if (a.ack_at) siren.stop(); else siren.start(a.severity !== "alarm");
+}
+</script>
+</body>
+</html>

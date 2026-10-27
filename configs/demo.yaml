@@ -1,0 +1,78 @@
+# Demo site: four basins laid out like the main hall of a large public pool.
+# Dimensions and camera positions are illustrative; for a real site the technical study replaces
+# them with surveyed values.
+site: Demo - hovedhall
+timezone: Europe/Oslo
+language: nb
+tick_hz: 10
+data_dir: ../data/demo
+
+basins:
+  - id: idrett
+    name: Idrettsbasseng
+    outline: [[0, 0], [50, 0], [50, 25], [0, 25]]
+    default_depth: 2.0
+    movable_floor: true
+    floor_depth: 1.2
+    regions:
+      - polygon: [[0, 0], [16, 0], [16, 25], [0, 25]]
+        depth: 1.2
+        movable: true
+    set_off_time_s: 10
+  - id: stup
+    name: Stupebasseng
+    outline: [[54, 5], [70, 5], [70, 25], [54, 25]]
+    default_depth: 5.0
+    set_off_time_s: 10
+  - id: bolge
+    name: Bølgebasseng
+    outline: [[0, 32], [25, 32], [25, 47], [0, 47]]
+    default_depth: 1.6
+    regions:
+      - polygon: [[0, 32], [25, 32], [25, 47], [0, 47]]
+        depth: 1.6
+        slope_to: [[12.5, 32], [12.5, 47], 0.1]
+    set_off_time_s: 10
+    turbulent_when: [waves]
+  - id: barn
+    name: Barnebasseng
+    outline: [[30, 34], [38, 34], [38, 40], [30, 40]]
+    default_depth: 0.3
+    set_off_time_s: 10
+
+# layout from vaktsom.design.coverage: every cell seen by >= 2 cameras on different brackets,
+# >= 40 px/m, line of sight <= 65 deg from vertical
+cameras:
+  - {"id": "idrett-01", "name": "Idrett 1", "url": "sim://demo/idrett-01", "basins": ["idrett"], "size": [2688, 1512], "position": [22.0, 27.0, 12.0], "target": [22.5, 17.5, 0.0], "hfov_deg": 100.0}
+  - {"id": "idrett-02", "name": "Idrett 2", "url": "sim://demo/idrett-02", "basins": ["idrett"], "size": [2688, 1512], "position": [22.0, -2.0, 12.0], "target": [22.5, 7.5, 0.0], "hfov_deg": 100.0}
+  - {"id": "idrett-03", "name": "Idrett 3", "url": "sim://demo/idrett-03", "basins": ["idrett"], "size": [2688, 1512], "position": [42.0, 27.0, 12.0], "target": [37.5, 22.5, 0.0], "hfov_deg": 100.0}
+  - {"id": "idrett-04", "name": "Idrett 4", "url": "sim://demo/idrett-04", "basins": ["idrett"], "size": [2688, 1512], "position": [42.0, -2.0, 12.0], "target": [37.5, 2.5, 0.0], "hfov_deg": 100.0}
+  - {"id": "idrett-05", "name": "Idrett 5", "url": "sim://demo/idrett-05", "basins": ["idrett"], "size": [2688, 1512], "position": [-2.0, 14.0, 12.0], "target": [7.5, 12.5, 0.0], "hfov_deg": 100.0}
+  - {"id": "idrett-06", "name": "Idrett 6", "url": "sim://demo/idrett-06", "basins": ["idrett"], "size": [2688, 1512], "position": [-2.0, 10.0, 12.0], "target": [2.5, 12.5, 0.0], "hfov_deg": 100.0}
+  - {"id": "idrett-07", "name": "Idrett 7", "url": "sim://demo/idrett-07", "basins": ["idrett"], "size": [2688, 1512], "position": [52.0, 14.0, 12.0], "target": [42.5, 12.5, 0.0], "hfov_deg": 100.0}
+  - {"id": "idrett-08", "name": "Idrett 8", "url": "sim://demo/idrett-08", "basins": ["idrett"], "size": [2688, 1512], "position": [52.0, 2.0, 12.0], "target": [47.5, 7.5, 0.0], "hfov_deg": 100.0}
+  - {"id": "idrett-09", "name": "Idrett 9", "url": "sim://demo/idrett-09", "basins": ["idrett"], "size": [2688, 1512], "position": [-2.0, 22.0, 12.0], "target": [2.5, 17.5, 0.0], "hfov_deg": 100.0}
+  - {"id": "idrett-10", "name": "Idrett 10", "url": "sim://demo/idrett-10", "basins": ["idrett"], "size": [2688, 1512], "position": [42.0, 27.0, 6.0], "target": [42.5, 22.5, 0.0], "hfov_deg": 100.0}
+  - {"id": "stup-01", "name": "Stup 1", "url": "sim://demo/stup-01", "basins": ["stup"], "size": [2688, 1512], "position": [52.0, 11.0, 12.0], "target": [61.5, 12.5, 0.0], "hfov_deg": 100.0}
+  - {"id": "stup-02", "name": "Stup 2", "url": "sim://demo/stup-02", "basins": ["stup"], "size": [2688, 1512], "position": [52.0, 19.0, 12.0], "target": [61.5, 17.5, 0.0], "hfov_deg": 100.0}
+  - {"id": "bolge-01", "name": "Bølge 1", "url": "sim://demo/bolge-01", "basins": ["bolge"], "size": [2688, 1512], "position": [14.0, 30.0, 12.0], "target": [12.5, 39.5, 0.0], "hfov_deg": 100.0}
+  - {"id": "bolge-02", "name": "Bølge 2", "url": "sim://demo/bolge-02", "basins": ["bolge"], "size": [2688, 1512], "position": [14.0, 49.0, 12.0], "target": [12.5, 39.5, 0.0], "hfov_deg": 100.0}
+  - {"id": "bolge-03", "name": "Bølge 3", "url": "sim://demo/bolge-03", "basins": ["bolge"], "size": [2688, 1512], "position": [18.0, 30.0, 9.0], "target": [22.5, 34.5, 0.0], "hfov_deg": 100.0}
+  - {"id": "barn-01", "name": "Barn 1", "url": "sim://demo/barn-01", "basins": ["barn"], "size": [2688, 1512], "position": [28.0, 32.0, 6.0], "target": [32.5, 36.5, 0.0], "hfov_deg": 80.0}
+  - {"id": "barn-02", "name": "Barn 2", "url": "sim://demo/barn-02", "basins": ["barn"], "size": [2688, 1512], "position": [28.0, 42.0, 6.0], "target": [32.5, 36.5, 0.0], "hfov_deg": 80.0}
+
+outputs:
+  - {id: post-idrett, kind: panel, wired: true}
+  - {id: post-fritid, kind: panel, wired: true}
+  - {id: klokker, kind: wearable, wired: false}
+  - {id: sirene-hall, kind: siren, wired: true, url: "http://192.0.2.10", options: {profile: Drukningsalarm, when: escalated}}
+  - {id: logg, kind: log, wired: true}
+
+escalation:
+  ack_timeout_s: 10
+  pre_alarm_to_alarm_s: 15
+  repeat_s: 20
+
+retention:
+  clip_days: 7
+  log_days: 30

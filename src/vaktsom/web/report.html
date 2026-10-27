@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="nb">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vaktsom - alarmrapport</title>
+<link rel="stylesheet" href="/static/app.css" />
+<style>
+  body { background: var(--paper); height: auto; }
+  main { max-width: 1120px; margin: 0 auto; padding: 28px 16px 48px; }
+  .head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 1.5rem; letter-spacing: -0.01em; }
+  .period { color: var(--muted); }
+  .head .spacer { flex: 1; }
+  input[type=month] { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; }
+  .wrap { overflow-x: auto; margin-top: 20px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { text-align: right; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { font-weight: 650; color: var(--ink-2); font-size: 0.78rem; vertical-align: bottom; white-space: normal; min-width: 70px; }
+  td.over { color: var(--alarm); font-weight: 700; }
+  .note { color: var(--muted); font-size: 0.85rem; margin: 14px 0 0; max-width: 72ch; }
+  @media print { .no-print { display: none; } main { padding: 0; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="head">
+    <h1>Alarmrapport</h1>
+    <span class="period" id="period"></span>
+    <span class="spacer"></span>
+    <input type="month" id="month" class="no-print" aria-label="Måned" />
+    <button class="btn no-print" id="print">Skriv ut</button>
+  </div>
+  <div class="wrap"><table id="table"></table></div>
+  <p class="note" id="cameras"></p>
+  <p class="note">Falske alarmer regnes fra utfallene badevaktene velger når de avslutter en alarm.
+    NS-EN ISO 20380 punkt 4.3.4 tillater i snitt høyst 5 falske alarmer per basseng per dag over 30
+    dager. Testalarmer telles bare som daglige tester.</p>
+</main>
+<script type="module">
+import { signIn, pad } from "/static/common.js";
+const $ = (id) => document.getElementById(id);
+const num = (v, digits = 0) => v == null ? "-" : Number(v).toLocaleString("nb-NO", { maximumFractionDigits: digits, minimumFractionDigits: digits });
+await signIn();
+const now = new Date();
+$("month").value = `${now.getFullYear()}-${pad(now.getMonth() + 1)}`;
+$("month").onchange = load;
+$("print").onclick = () => window.print();
+load();
+
+async function load() {
+  const [y, m] = $("month").value.split("-").map(Number);
+  const start = new Date(y, m - 1, 1), end = new Date(Math.min(new Date(y, m, 1), Date.now()));
+  const r = await fetch(`/api/report?start=${start / 1000}&end=${end / 1000}`);
+  if (r.status === 403) { $("table").innerHTML = "<tr><td>Rapporten er for ledere.</td></tr>"; return; }
+  const rep = await r.json();
+  $("period").textContent = `${rep.site} · ${start.toLocaleDateString("nb-NO", { month: "long", year: "numeric" })} · ${num(rep.days, 1)} dager`;
+  const rows = Object.values(rep.basins).map((b) => `<tr>
+    <td>${b.name}</td><td>${b.alarms}</td><td>${b.pre_alarms}</td><td>${b.false_alarms}</td>
+    <td class="${b.within_iso_limit ? "" : "over"}">${num(b.false_alarms_per_day, 2)}</td>
+    <td>${b.by_outcome.real || 0}</td><td>${b.by_outcome.drill || 0}</td><td>${b.unresolved}</td>
+    <td>${b.ack_median_s == null ? "-" : `${num(b.ack_median_s, 1)} s`}</td>
+    <td>${b.days_with_daily_test}</td><td>${num(b.reduced_coverage_h, 1)} t</td></tr>`);
+  $("table").innerHTML = `<tr><th>Basseng</th><th>Alarmer</th><th>Forvarsler</th><th>Falske alarmer</th>
+    <th>Falske alarmer per dag</th><th>Reelle hendelser</th><th>Øvelser</th><th>Uten utfall</th>
+    <th>Kvittert etter, median</th><th>Dager med daglig test</th><th>Redusert dekning</th></tr>${rows.join("")}`;
+  const down = Object.entries(rep.camera_down_h);
+  $("cameras").textContent = down.length
+    ? `Kameraer ute i perioden: ${down.map(([c, h]) => `${c} ${num(h, 1)} t`).join(", ")}.`
+    : "Ingen kameraer har vært ute i perioden.";
+}
+</script>
+</body>
+</html>

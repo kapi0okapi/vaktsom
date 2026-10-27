@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="nb">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vaktsom - oversikt</title>
+<link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+<header class="bar">
+  <span class="brand">Vaktsom</span>
+  <span class="site" id="site"></span>
+  <span class="spacer"></span>
+  <span class="pill" id="system">Overvåking aktiv</span>
+  <span class="clock" id="clock"></span>
+  <a class="link" href="/alarms">Historikk</a>
+  <a class="link" href="/report" id="reportLink" hidden>Rapport</a>
+  <span class="user" id="user" hidden><span id="userName"></span><button class="link" id="logout">Logg ut</button></span>
+</header>
+<div class="layout">
+  <section class="card mapcard">
+    <div class="maphead">
+      <h2>Bassenger</h2>
+      <div class="legend">
+        <span><i style="background:var(--person)"></i>I vannet</span>
+        <span><i style="background:var(--under)"></i>Under vann</span>
+        <span><i style="background:var(--alarm)"></i>Alarm</span>
+        <span><i style="background:rgb(199 119 0 / .45);border-radius:2px"></i>Uten kameradekning</span>
+      </div>
+    </div>
+    <div class="map"><svg id="map"></svg></div>
+    <div class="tools">
+      <button class="btn" id="zoneBtn">Ikke-deteksjonssone</button>
+      <span class="hint" id="zoneHint" hidden>Klikk hjørnene i sonen på kartet, deretter</span>
+      <input type="number" id="zoneMin" value="15" min="1" max="240" style="width:70px" hidden />
+      <span class="hint" id="zoneMinLabel" hidden>min</span>
+      <button class="btn primary" id="zoneSave" hidden>Opprett sone</button>
+      <span class="spacer" style="flex:1"></span>
+      <select id="testBasin"></select>
+      <button class="btn" id="testBtn">Daglig test</button>
+    </div>
+    <div class="cams" id="cams"></div>
+  </section>
+  <aside class="side">
+    <section class="card" style="flex: 1.4">
+      <h2>Alarmer <small id="alarmCount"></small></h2>
+      <div class="alarms" id="alarms"><div class="empty">Ingen aktive alarmer</div></div>
+    </section>
+    <section class="card" style="flex: 1">
+      <h2>Systemstatus <small id="camCount"></small></h2>
+      <div class="status" id="status"></div>
+    </section>
+    <section class="card" style="flex: 0.9">
+      <h2>Siste hendelser</h2>
+      <div class="log" id="log"></div>
+    </section>
+  </aside>
+</div>
+<div class="modal" id="modal"><button class="close" id="modalClose">×</button><img id="modalImg" alt="" /></div>
+<script type="module">
+import { T, loadConfig, connect, clock, since, timeOf, PoolMap } from "/static/common.js";
+
+const $ = (id) => document.getElementById(id);
+const cfg = await loadConfig();
+$("site").textContent = cfg.site;
+$("reportLink").hidden = !["leder", "admin", "leverandor"].includes(cfg.me.role);
+if (cfg.me.auth) {
+  $("userName").textContent = cfg.me.name;
+  $("user").hidden = false;
+  $("logout").onclick = async () => { await fetch("/api/logout", { method: "POST" }); location.href = "/login"; };
+}
+clock($("clock"));
+const map = new PoolMap($("map"), cfg);
+const basinName = Object.fromEntries(cfg.basins.map((b) => [b.id, b.name]));
+let state = null;
+
+for (const b of cfg.basins) $("testBasin").append(new Option(b.name, b.id));
+const post = (url, body) =>
+  fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+// one row per basin, built once so that its controls keep focus while the state updates
+const basinRows = {};
+for (const b of cfg.basins) {
+  const row = document.createElement("div");
+  row.className = "row";
+  row.innerHTML = `<span class="name">${b.name} · ${b.set_off_time_s} s</span><span class="controls"></span><span class="chip"></span>`;
+  const controls = row.querySelector(".controls");
+  if (b.movable_floor) {  // ISO 20380 4.2: the system must know how deep the water over the floor is
+    const sel = document.createElement("select");
+    sel.title = "Hev- og senkbar bunn";
+    sel.append(new Option("Bunn ukjent", ""));
+    sel.options[0].disabled = true;
+    for (let k = 0; k <= Math.round(b.depth * 10); k++) sel.append(new Option(`Bunn ${(k / 10).toFixed(1).replace(".", ",")} m`, (k / 10).toFixed(1)));
+    sel.onchange = () => post(`/api/basins/${b.id}/floor`, { depth: Number(sel.value) });
+    controls.append(sel);
+  }
+  for (const m of b.modes) {
+    const btn = document.createElement("button");
+    btn.className = "btn small";
+    btn.dataset.mode = m;
+    btn.textContent = T.mode[m] || m;
+    btn.onclick = () => post(`/api/basins/${b.id}/modes/${m}`, { on: btn.getAttribute("aria-pressed") !== "true" });
+    controls.append(btn);
+  }
+  basinRows[b.id] = row;
+  $("status").append(row);
+}
+const camRows = document.createElement("div");
+camRows.style.display = "contents";
+$("status").append(camRows);
+for (const c of cfg.cameras) {
+  const d = document.createElement("div");
+  d.className = "cam"; d.id = `cam-${c.id}`;
+  d.innerHTML = `<img alt=""><span>${c.name || c.id}</span>`;
+  d.onclick = () => { $("modalImg").src = `/api/cameras/${c.id}/mjpeg?width=1280&fps=6`; $("modal").classList.add("show"); };
+  $("cams").append(d);
+}
+$("modalClose").onclick = () => { $("modal").classList.remove("show"); $("modalImg").src = ""; };
+// thumbnails as refreshed snapshots: a browser keeps only six connections per server, so live
+// streams are reserved for the enlarged view and the alarm cards
+let thumb = 0;
+setInterval(() => {
+  const cams = cfg.cameras;
+  for (let k = 0; k < 3; k++) {
+    const c = cams[(thumb++) % cams.length];
+    const img = document.querySelector(`#cam-${c.id} img`);
+    if (img) img.src = `/api/cameras/${c.id}/snapshot.jpg?width=400&t=${Date.now()}`;
+  }
+}, 400);
+
+const live = connect("dashboard", "oversikt", (m) => {
+  if (m.type === "state") { state = m; render(); }
+  if (m.type === "alarm") refreshLog();
+}, (ok) => { if (!ok) setSystem("alarm", "Ingen kontakt med systemet"); });
+
+function setSystem(cls, text) { const s = $("system"); s.className = `pill ${cls}`; s.textContent = text; }
+
+function render() {
+  map.update(state);
+  const open = state.alarms;
+  const alarms = open.filter((a) => a.severity === "alarm" && !a.ack_at);
+  const pre = open.filter((a) => a.severity === "pre_alarm" && !a.ack_at);
+  const cams = Object.values(state.cameras);
+  const bad = cams.filter((c) => c.state !== "ok");
+  const cov = Object.values(state.coverage);
+  const reduced = cov.filter((c) => c.state === "degraded" || c.state === "down");
+  if (alarms.length) setSystem("alarm", alarms.length > 1 ? `${alarms.length} alarmer` : "ALARM");
+  else if (pre.length) setSystem("warn", "Forvarsel");
+  else if (reduced.length) setSystem("warn", "Redusert dekning");
+  else setSystem("", "Overvåking aktiv");
+
+  $("alarmCount").textContent = open.length ? `${open.length} aktive` : "";
+  const box = $("alarms");
+  if (!open.length) box.innerHTML = `<div class="empty">Ingen aktive alarmer</div>`;
+  else {
+    const existing = new Map([...box.querySelectorAll(".alarm")].map((e) => [e.dataset.id, e]));
+    const keep = new Set();
+    for (const a of open.slice().sort((x, y) => y.raised_at - x.raised_at)) {
+      keep.add(a.id);
+      let card = existing.get(a.id);
+      if (!card) {
+        card = document.createElement("div");
+        card.dataset.id = a.id;
+        card.innerHTML = `<div class="kind"></div><div class="where"></div><div class="meta"></div>
+          <img alt="" /><div class="actions">
+          <button class="btn danger" data-act="ack">Kvitter</button>
+          <select data-act="outcome">${Object.entries(T.outcome).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select>
+          <button class="btn" data-act="resolve">Avslutt</button></div>`;
+        card.querySelector('[data-act="ack"]').onclick = () => live.send({ type: "ack", alarm_id: a.id });
+        card.querySelector('[data-act="resolve"]').onclick = () =>
+          live.send({ type: "resolve", alarm_id: a.id, outcome: card.querySelector('[data-act="outcome"]').value });
+        box.prepend(card);
+        box.querySelector(".empty")?.remove();
+      }
+      card.className = `alarm${a.severity === "pre_alarm" ? " pre" : ""}${a.ack_at ? " acked" : ""}`;
+      card.querySelector(".kind").textContent = `${T.severity[a.severity]}: ${T.kind[a.kind] || a.kind}`;
+      card.querySelector(".where").textContent = a.label || basinName[a.basin_id];
+      card.querySelector(".meta").textContent = `${timeOf(a.raised_at)} · ${since(a.onset)} siden start${a.escalated ? " · eskalert" : ""}${a.ack_by ? ` · kvittert av ${a.ack_by}` : ""}`;
+      card.querySelector('[data-act="ack"]').hidden = !!a.ack_at;
+      const cam = a.cameras?.[0];
+      const img = card.querySelector("img");
+      if (cam && !img.dataset.cam) { img.dataset.cam = cam; img.src = `/api/cameras/${cam}/mjpeg?width=640&fps=4`; }
+    }
+    for (const [id, e] of existing) if (!keep.has(id)) e.remove();
+  }
+
+  $("camCount").textContent = `${cams.length - bad.length}/${cams.length} kameraer OK`;
+  for (const b of cfg.basins) {
+    const row = basinRows[b.id];
+    const c = state.coverage[b.id];
+    const closed = state.closed.includes(b.id);
+    const modes = state.modes?.[b.id] || [];
+    const st = closed ? "off" : c ? c.state : "ok";
+    const chip = row.querySelector(".chip");
+    chip.className = `chip ${{ ok: "", reduced: "", degraded: "warn", down: "alarm", off: "off" }[st]}`;
+    const extra = c && c.uncovered_fraction > 0 ? ` (${Math.round(c.uncovered_fraction * 100)} %)` : "";
+    chip.textContent = closed ? "Stengt" : modes.length ? `Redusert: ${modes.map((m) => (T.mode[m] || m).toLowerCase()).join(", ")}` : `${T.coverage[st] || st}${extra}`;
+    for (const btn of row.querySelectorAll("button[data-mode]")) btn.setAttribute("aria-pressed", modes.includes(btn.dataset.mode));
+    const sel = row.querySelector("select");
+    if (sel && document.activeElement !== sel) sel.value = state.floors?.[b.id] == null ? "" : state.floors[b.id].toFixed(1);
+  }
+  const rows = [];
+  for (const c of bad) {
+    const name = cfg.cameras.find((x) => x.id === c.camera_id)?.name || c.camera_id;
+    const why = c.reasons.map((r) => T.reason[r] || r).join(", ");
+    rows.push(`<div class="row"><span class="name">${name}</span><span class="chip ${c.state === "down" ? "alarm" : "warn"}">${T.camera[c.state]}${why ? `: ${why}` : ""}</span></div>`);
+  }
+  camRows.innerHTML = rows.join("");
+  for (const c of cams) $(`cam-${c.camera_id}`)?.classList.toggle("degraded", c.state === "degraded");
+  for (const c of cams) $(`cam-${c.camera_id}`)?.classList.toggle("down", c.state === "down");
+}
+
+async function refreshLog() {
+  const rows = await (await fetch(`/api/alarms?since=${Date.now() / 1000 - 86400}&limit=30`)).json();
+  $("log").innerHTML = rows.map((a) => `<div><b>${timeOf(a.raised_at)}</b> ${T.short[a.kind] || a.kind} · ${a.detail.label || basinName[a.basin_id]}${a.outcome ? ` · ${T.outcome[a.outcome]}` : ""}</div>`).join("") || `<div>Ingen hendelser i dag</div>`;
+}
+refreshLog();
+setInterval(refreshLog, 10000);
+
+// non-detection zones (ISO 20380 4.3.2): drawn by the lifeguard, removed automatically
+let drawing = null;
+$("zoneBtn").onclick = () => {
+  drawing = drawing ? null : [];
+  for (const id of ["zoneHint", "zoneMin", "zoneMinLabel", "zoneSave"]) $(id).hidden = !drawing;
+  $("zoneBtn").classList.toggle("active", !!drawing);
+  map.draw.replaceChildren();
+};
+$("map").addEventListener("click", (e) => {
+  if (!drawing) return;
+  drawing.push(map.toPool(e));
+  map.draw.replaceChildren();
+  const ns = "http://www.w3.org/2000/svg";
+  const poly = document.createElementNS(ns, "polygon");
+  poly.setAttribute("points", drawing.map(([x, y]) => `${x},${-y}`).join(" "));
+  poly.setAttribute("class", "drawpoly");
+  map.draw.append(poly);
+});
+$("zoneSave").onclick = async () => {
+  if (!drawing || drawing.length < 3) return;
+  const c = drawing.reduce((s, p) => [s[0] + p[0] / drawing.length, s[1] + p[1] / drawing.length], [0, 0]);
+  const basin = cfg.basins.find((b) => inside(c, b.outline));
+  if (!basin) return;
+  await fetch("/api/zones", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ basin: basin.id, polygon: drawing, minutes: +$("zoneMin").value, reason: "redningsøvelse" }) });
+  $("zoneBtn").click();
+};
+function inside([x, y], poly) {
+  let c = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) c = !c;
+  }
+  return c;
+}
+$("testBtn").onclick = () => fetch(`/api/test/alarm?basin=${$("testBasin").value}`, { method: "POST" });
+</script>
+</body>
+</html>

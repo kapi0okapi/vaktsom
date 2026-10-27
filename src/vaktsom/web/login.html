@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="nb">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vaktsom - logg inn</title>
+<link rel="stylesheet" href="/static/app.css" />
+<style>
+  body { display: flex; align-items: center; justify-content: center; padding: 16px; }
+  form {
+    width: 100%; max-width: 340px; display: flex; flex-direction: column; gap: 14px; padding: 28px;
+    background: var(--paper); border: 1px solid var(--line); border-radius: 14px;
+  }
+  h1 { margin: 0 0 4px; font-size: 1.35rem; letter-spacing: -0.01em; }
+  label { display: flex; flex-direction: column; gap: 6px; font-size: 0.85rem; font-weight: 600; color: var(--ink-2); }
+  input { font: inherit; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; }
+  form .btn.primary { padding: 10px 12px; font-size: 0.95rem; }
+  .error { margin: 0; min-height: 1.2em; color: var(--alarm); font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<form id="form">
+  <h1>Vaktsom</h1>
+  <label>Brukernavn<input id="name" autocomplete="username" autocapitalize="none" required autofocus /></label>
+  <label>Passord<input id="password" type="password" autocomplete="current-password" required /></label>
+  <p class="error" id="error" role="alert"></p>
+  <button class="btn primary">Logg inn</button>
+</form>
+<script>
+const $ = (id) => document.getElementById(id);
+$("form").onsubmit = async (e) => {
+  e.preventDefault();
+  $("error").textContent = "";
+  const r = await fetch("/api/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: $("name").value.trim(), password: $("password").value }),
+  });
+  if (!r.ok) {
+    $("error").textContent = "Innloggingen mislyktes. Sjekk brukernavn og passord. Etter flere feil forsøk må du vente fem minutter.";
+    return;
+  }
+  const next = new URL(new URLSearchParams(location.search).get("next") || "/", location.origin);
+  location.href = next.origin === location.origin ? next.pathname + next.search : "/";
+};
+</script>
+</body>
+</html>

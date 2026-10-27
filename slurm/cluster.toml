@@ -1,0 +1,238 @@
+# Slurm cluster settings and job definitions, rendered by slurm/generate.py.
+# Personal settings (the Slurm account) live in slurm/cluster.local.toml, which is not committed.
+
+[cluster]
+account = "CHANGE_ME"   # overridden by slurm/cluster.local.toml
+python_module = "Python/3.11.3-GCCcore-12.3.0"
+venv = "/cluster/work/$USER/venvs/vaktsom"
+workdir = "/cluster/work/$USER/vaktsom"   # $DATA = workdir/data, $RUNS = workdir/runs
+mail_user = ""
+
+[cluster.env]
+HF_HUB_OFFLINE = "1"
+
+[defaults]
+partition = "GPUQ"
+time = "0-08:00:00"
+cpus = 12
+mem = "64G"
+gpus = 1
+constraint = "gpu40g|gpu80g"
+
+# Training data ----------------------------------------------------------------------------------
+
+[jobs.composites]
+description = "Composites: people under and on the water of real pool photos (CPU)"
+partition = "CPUQ"
+gpus = 0
+cpus = 32
+mem = "64G"
+time = "0-03:00:00"
+command = """
+python ml/synth/composite.py --backgrounds $DATA/openimages_pool --cutouts $DATA/coco_pool/cutouts \
+    --objects $DATA/coco_objects --out $DATA/composites --n 24000 --workers 32
+"""
+
+[jobs.render]
+description = "Blender/Cycles renders of pool halls from ceiling cameras with labelled people (array)"
+time = "0-06:00:00"
+cpus = 8
+mem = "32G"
+constraint = "gpu32g|gpu40g|gpu80g"
+command = "/cluster/work/$USER/tools/blender-5.2.0-linux-x64/blender -b --factory-startup -P ml/render/pool_scene.py -- $ARRAY_ARGS"
+array = [
+    "--out $DATA/renders --n 300 --seed 0 --device OPTIX",
+    "--out $DATA/renders --n 300 --seed 1 --device OPTIX",
+    "--out $DATA/renders --n 300 --seed 2 --device OPTIX",
+    "--out $DATA/renders --n 300 --seed 3 --device OPTIX",
+    "--out $DATA/renders --n 300 --seed 4 --device OPTIX",
+    "--out $DATA/renders --n 300 --seed 5 --device OPTIX",
+    "--out $DATA/renders --n 300 --seed 6 --device OPTIX",
+    "--out $DATA/renders --n 300 --seed 7 --device OPTIX",
+    "--out $DATA/renders --n 300 --seed 8 --device OPTIX",
+    "--out $DATA/renders --n 300 --seed 9 --device OPTIX",
+    "--out $DATA/renders --n 300 --seed 10 --device OPTIX",
+    "--out $DATA/renders --n 300 --seed 11 --device OPTIX",
+    "--out $DATA/renders --n 300 --seed 12 --device OPTIX",
+    "--out $DATA/renders --n 300 --seed 13 --device OPTIX",
+    "--out $DATA/renders --n 300 --seed 14 --device OPTIX",
+    "--out $DATA/renders --n 300 --seed 15 --device OPTIX",
+]
+
+[jobs.render-test]
+description = "Held-out renders (other seeds) for the detector comparison on ceiling-camera views"
+time = "0-04:00:00"
+cpus = 8
+mem = "32G"
+constraint = "gpu32g|gpu40g|gpu80g"
+command = "/cluster/work/$USER/tools/blender-5.2.0-linux-x64/blender -b --factory-startup -P ml/render/pool_scene.py -- $ARRAY_ARGS"
+array = [
+    "--out $DATA/renders_test --n 250 --seed 100 --device OPTIX",
+    "--out $DATA/renders_test --n 250 --seed 101 --device OPTIX",
+]
+
+[jobs.build-sets]
+description = "COCO files for the renders; the training set (real photos + renders) and the ablation sets"
+partition = "CPUQ"
+gpus = 0
+cpus = 4
+mem = "16G"
+time = "0-00:30:00"
+command = """
+python ml/render/to_coco.py --root $DATA/renders --val 0.08
+python ml/render/to_coco.py --root $DATA/renders_test --val 1.0
+P="--openimages $DATA/openimages_pool --coco-pool $DATA/coco_pool"
+python ml/data/build_detection_set.py --out $DATA/det $P --synthetic $DATA/renders
+python ml/data/build_detection_set.py --out $DATA/det_photos $P
+python ml/data/build_detection_set.py --out $DATA/det_photos_composites $P --synthetic $DATA/composites
+python ml/data/build_detection_set.py --out $DATA/det_all $P --synthetic $DATA/composites --synthetic $DATA/renders
+"""
+
+# Detector --------------------------------------------------------------------------------------
+
+[jobs.train-det]
+description = "RF-DETR-L on real pool photos + ceiling-camera renders"
+time = "0-20:00:00"
+constraint = "gpu40g|gpu80g"
+command = "python ml/train_detector.py --data $DATA/det --model large --out $RUNS/det_large --epochs 30 --batch-size 4 --grad-accum 4"
+
+[jobs.train-det-ablation]
+description = "RF-DETR-M on each training set: what real photos, composites and renders contribute (array)"
+time = "0-14:00:00"
+command = "python ml/train_detector.py --model medium --batch-size 8 --grad-accum 2 $ARRAY_ARGS"
+array = [
+    "--data $DATA/det --out $RUNS/det_medium --epochs 30",
+    "--data $DATA/det_photos --out $RUNS/det_photos_medium --epochs 60",
+    "--data $DATA/det_photos_composites --out $RUNS/det_photos_composites_medium --epochs 40",
+    "--data $DATA/det_all --out $RUNS/det_all_medium --epochs 30",
+]
+
+[jobs.export-det]
+description = "ONNX export of the large and medium detectors (array)"
+time = "0-00:30:00"
+cpus = 4
+mem = "32G"
+command = "python ml/export_detector.py --data $DATA/det $ARRAY_ARGS"
+array = [
+    "--model large --weights $RUNS/det_large/checkpoint_best_total.pth --out $RUNS/export/det_large",
+    "--model medium --weights $RUNS/det_medium/checkpoint_best_total.pth --out $RUNS/export/det_medium",
+]
+
+[jobs.eval-det]
+description = "Detector comparison on real test photos, composites and held-out ceiling-camera renders (array)"
+time = "0-02:00:00"
+cpus = 8
+mem = "32G"
+command = "python ml/eval_detector.py $ARRAY_ARGS --test $DATA/det/test/_annotations.coco.json:$DATA/det/test --test $DATA/composites/val.json:$DATA/composites/images --test $DATA/renders_test/val.json:$DATA/renders_test/images --out $RUNS/eval_det"
+array = [
+    "--model large --weights $RUNS/det_large/checkpoint_best_total.pth --name det_large",
+    "--model medium --weights $RUNS/det_medium/checkpoint_best_total.pth --name det_medium",
+    "--model medium --weights $RUNS/det_photos_medium/checkpoint_best_total.pth --name det_photos_medium",
+    "--model medium --weights $RUNS/det_photos_composites_medium/checkpoint_best_total.pth --name det_photos_composites_medium",
+    "--model medium --weights $RUNS/det_all_medium/checkpoint_best_total.pth --name det_all_medium",
+]
+
+[jobs.bench-det]
+description = "Detector throughput, PyTorch FP16, large and medium on the same GPU"
+time = "0-00:40:00"
+cpus = 4
+mem = "16G"
+command = """
+python ml/bench_detector.py --model RFDETRLarge --weights $RUNS/det_large/checkpoint_best_total.pth --batch 1 8 16
+python ml/bench_detector.py --model RFDETRMedium --weights $RUNS/det_medium/checkpoint_best_total.pth --batch 1 8 16
+"""
+
+[jobs.bench-trt]
+description = "Detector throughput, TensorRT FP16, large and medium, for the hardware sizing"
+time = "0-01:00:00"
+cpus = 8
+mem = "32G"
+constraint = "gpu40g|gpu80g"
+command = """
+python ml/bench_trt.py --model $RUNS/export/det_medium/rfdetr-medium.onnx --batch 1 8 16
+python ml/bench_trt.py --model $RUNS/export/det_large/rfdetr-large.onnx --batch 1 8 16
+"""
+
+[jobs.train-attr]
+description = "Crop attribute model (upright / under water) from renders and composites"
+time = "0-03:00:00"
+cpus = 16
+mem = "48G"
+command = "python ml/train_attributes.py --renders $DATA/renders --composites $DATA/composites --out $RUNS/attributes --epochs 8 --workers 14"
+
+# End-to-end tests ------------------------------------------------------------------------------
+
+[jobs.video-demo]
+description = "Photorealistic video of a drowning from two ceiling cameras, 30 s at 10 fps (array: camera x chunk)"
+time = "0-03:00:00"
+cpus = 8
+mem = "32G"
+constraint = "gpu32g|gpu40g|gpu80g"
+command = "/cluster/work/$USER/tools/blender-5.2.0-linux-x64/blender -b --factory-startup -P ml/render/pool_video.py -- $ARRAY_ARGS"
+array = [
+    "--out $DATA/video_demo --camera 0 --seed 3 --seconds 30 --first 0 --last 74 --device OPTIX",
+    "--out $DATA/video_demo --camera 0 --seed 3 --seconds 30 --first 75 --last 149 --device OPTIX",
+    "--out $DATA/video_demo --camera 0 --seed 3 --seconds 30 --first 150 --last 224 --device OPTIX",
+    "--out $DATA/video_demo --camera 0 --seed 3 --seconds 30 --first 225 --last 299 --device OPTIX",
+    "--out $DATA/video_demo --camera 1 --seed 3 --seconds 30 --first 0 --last 74 --device OPTIX",
+    "--out $DATA/video_demo --camera 1 --seed 3 --seconds 30 --first 75 --last 149 --device OPTIX",
+    "--out $DATA/video_demo --camera 1 --seed 3 --seconds 30 --first 150 --last 224 --device OPTIX",
+    "--out $DATA/video_demo --camera 1 --seed 3 --seconds 30 --first 225 --last 299 --device OPTIX",
+]
+
+[jobs.video-set]
+description = "Eight rendered test videos (drownings, a breath hold, normal swimming) x two cameras"
+time = "0-03:00:00"
+cpus = 8
+mem = "32G"
+constraint = "gpu32g|gpu40g|gpu80g"
+command = "/cluster/work/$USER/tools/blender-5.2.0-linux-x64/blender -b --factory-startup -P ml/render/pool_video.py -- $ARRAY_ARGS"
+array = [
+    "--out $DATA/video_set/active_11 --camera 0 --seed 11 --scenario active --seconds 30 --device OPTIX",
+    "--out $DATA/video_set/active_11 --camera 1 --seed 11 --scenario active --seconds 30 --device OPTIX",
+    "--out $DATA/video_set/active_12 --camera 0 --seed 12 --scenario active --seconds 30 --device OPTIX",
+    "--out $DATA/video_set/active_12 --camera 1 --seed 12 --scenario active --seconds 30 --device OPTIX",
+    "--out $DATA/video_set/active_13 --camera 0 --seed 13 --scenario active --seconds 30 --device OPTIX",
+    "--out $DATA/video_set/active_13 --camera 1 --seed 13 --scenario active --seconds 30 --device OPTIX",
+    "--out $DATA/video_set/active_14 --camera 0 --seed 14 --scenario active --seconds 30 --device OPTIX",
+    "--out $DATA/video_set/active_14 --camera 1 --seed 14 --scenario active --seconds 30 --device OPTIX",
+    "--out $DATA/video_set/passive_21 --camera 0 --seed 21 --scenario passive --seconds 30 --device OPTIX",
+    "--out $DATA/video_set/passive_21 --camera 1 --seed 21 --scenario passive --seconds 30 --device OPTIX",
+    "--out $DATA/video_set/passive_22 --camera 0 --seed 22 --scenario passive --seconds 30 --device OPTIX",
+    "--out $DATA/video_set/passive_22 --camera 1 --seed 22 --scenario passive --seconds 30 --device OPTIX",
+    "--out $DATA/video_set/breath_hold_31 --camera 0 --seed 31 --scenario breath_hold --seconds 30 --device OPTIX",
+    "--out $DATA/video_set/breath_hold_31 --camera 1 --seed 31 --scenario breath_hold --seconds 30 --device OPTIX",
+    "--out $DATA/video_set/normal_41 --camera 0 --seed 41 --scenario normal --seconds 30 --device OPTIX",
+    "--out $DATA/video_set/normal_41 --camera 1 --seed 41 --scenario normal --seconds 30 --device OPTIX",
+]
+
+[jobs.e2e-set]
+description = "Full chain on the eight rendered videos: detector, attributes, tracking, rules, alarms (CPU, array)"
+partition = "CPUQ"
+gpus = 0
+cpus = 16
+mem = "32G"
+time = "0-05:00:00"
+command = "python ml/e2e_set.py --videos $DATA/video_set --attributes $RUNS/attributes/attributes.onnx $ARRAY_ARGS"
+array = [
+    "--model $RUNS/export/det_large/rfdetr-large.onnx --out $RUNS/e2e/det_large/summary.json --scores $RUNS/e2e/det_large/scores",
+    "--model $RUNS/export/det_medium/rfdetr-medium.onnx --out $RUNS/e2e/det_medium/summary.json --scores $RUNS/e2e/det_medium/scores",
+]
+
+[jobs.sweep-distress]
+description = "Operating point of the surface-distress warning: false warnings per day against early warnings"
+partition = "CPUQ"
+gpus = 0
+cpus = 32
+mem = "64G"
+time = "0-03:00:00"
+command = "python ml/sweep_distress.py --config configs/demo.yaml --basin idrett --basin stup --basin bolge --hours 6 --trials 30 --workers 32 --out $RUNS/sweep_distress.json"
+
+[jobs.eval-sim]
+description = "System evaluation in simulation: ISO tests, 12 h of bathing per basin, 40 drownings per basin"
+partition = "CPUQ"
+gpus = 0
+cpus = 32
+mem = "64G"
+time = "0-08:00:00"
+command = "python -m vaktsom.cli eval all --config configs/demo.yaml --out $RUNS/eval --hours 12 --trials 40 --workers 30"

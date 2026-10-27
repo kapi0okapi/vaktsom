@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="nb">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+<title>Vaktsom - klokke</title>
+<link rel="stylesheet" href="/static/app.css" />
+<style>
+  html, body { background: #000; color: #fff; overflow: hidden; }
+  .face { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 8%; gap: 2vh; }
+  .ring { width: 34vmin; height: 34vmin; border-radius: 50%; border: 2.4vmin solid var(--ok); display: flex; align-items: center; justify-content: center; font: 700 7vmin var(--mono); }
+  .idle .label { font-size: 6.5vmin; font-weight: 700; color: #b9f0d2; }
+  .idle .sub { font-size: 4.6vmin; color: #8fa0b2; }
+  .alarm { display: none; background: var(--alarm); }
+  .alarm.pre { background: #b86a00; }
+  .alarm.acked { background: #5b1c20; }
+  .alarm.system { background: #3d4652; }
+  body.alarming .alarm { display: flex; }
+  body.alarming .idle { display: none; }
+  .alarm h1 { margin: 0; font-size: 13vmin; line-height: 1; }
+  .alarm .what { font-size: 5.6vmin; font-weight: 650; }
+  .alarm .where { font-size: 8vmin; font-weight: 800; line-height: 1.1; }
+  .alarm .time { font: 600 5.5vmin var(--mono); opacity: 0.9; }
+  .alarm button { margin-top: 1vh; font-size: 8vmin; font-weight: 800; padding: 3.2vmin 9vmin; border-radius: 99px; border: 0; background: #fff; color: var(--alarm); }
+  .alarm.acked button { display: none; }
+  .mini { width: 46vmin; height: 26vmin; }
+  body.offline .ring { border-color: var(--warn); }
+  body.offline .idle .label { color: #ffd08a; }
+</style>
+</head>
+<body>
+<div class="face idle"><div class="ring" id="clock"></div><div class="label">Overvåking aktiv</div><div class="sub" id="sub"></div></div>
+<div class="face alarm" id="alarm">
+  <h1 id="title">ALARM</h1>
+  <div class="what" id="what"></div>
+  <div class="where" id="where"></div>
+  <svg class="mini" id="mini"></svg>
+  <div class="time" id="time"></div>
+  <button id="ack">KVITTER</button>
+</div>
+<script type="module">
+import { T, loadConfig, connect, since, PoolMap, pad } from "/static/common.js";
+const $ = (id) => document.getElementById(id);
+const name = new URLSearchParams(location.search).get("name") || "Badevakt";
+const cfg = await loadConfig();
+setInterval(() => { const d = new Date(); $("clock").textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}`; }, 1000);
+let current = null, mini = null, miniBasin = null, seen = new Set();
+const live = connect("wearable", name, (m) => {
+  if (m.type === "alarm" && !seen.has(`${m.alarm.id}:${m.event}`)) {
+    seen.add(`${m.alarm.id}:${m.event}`);
+    live.send({ type: "received", alarm_id: m.alarm.id });  // delivery receipt, logged per device
+  }
+  if (m.type === "state") render(m);
+}, (ok) => {
+  document.body.classList.toggle("offline", !ok);
+  document.querySelector(".idle .label").textContent = ok ? "Overvåking aktiv" : "Ingen kontakt";
+  if (!ok) navigator.vibrate?.([300, 150, 300]);
+});
+$("ack").onclick = () => current && live.send({ type: "ack", alarm_id: current.id });
+
+function render(s) {
+  $("sub").textContent = `${name} · ${Object.values(s.cameras).filter((c) => c.state === "ok").length} kameraer`;
+  const open = s.alarms.sort((a, b) => (b.severity === "alarm") - (a.severity === "alarm") || a.raised_at - b.raised_at);
+  if (!open.length) { document.body.classList.remove("alarming"); current = null; return; }
+  const a = open[0];
+  if (!current || current.id !== a.id || (!a.ack_at && current.ack_at === undefined)) navigator.vibrate?.([600, 200, 600, 200, 600]);
+  current = a;
+  document.body.classList.add("alarming");
+  $("alarm").className = `face alarm${a.severity === "pre_alarm" ? " pre" : ""}${a.severity === "system" ? " system" : ""}${a.ack_at ? " acked" : ""}`;
+  $("title").textContent = a.ack_at ? "KVITTERT" : { pre_alarm: "SJEKK", system: "SYSTEM" }[a.severity] || "ALARM";
+  $("what").textContent = T.short[a.kind] || a.kind;
+  $("where").textContent = a.label;
+  $("time").textContent = since(a.onset);
+  if (miniBasin !== a.basin_id) { $("mini").replaceChildren(); mini = new PoolMap($("mini"), cfg, { basins: [a.basin_id], cameras: false, margin: 1 }); miniBasin = a.basin_id; }
+  mini.update({ ...s, persons: [], alarms: [a] });
+}
+</script>
+</body>
+</html>

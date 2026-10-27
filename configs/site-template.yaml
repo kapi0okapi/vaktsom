@@ -1,0 +1,55 @@
+# Site configuration template, filled in during the technical study (NS-EN ISO 20380 4.2).
+# Coordinates are pool metres: x along the basin, y across, z up, water surface at z = 0.
+site: Anleggets navn
+timezone: Europe/Oslo
+language: nb
+tick_hz: 10
+data_dir: /var/lib/vaktsom
+
+basins:
+  - id: idrett
+    name: Idrettsbasseng
+    outline: [[0, 0], [50, 0], [50, 25], [0, 25]]  # from the drawings, checked on site
+    default_depth: 2.0
+    movable_floor: true
+    floor_depth: 1.2  # the floor's setting at start-up; leave out if unknown
+    turbulent_when: []  # e.g. [waves] for a wave pool: reduced detection is shown while waves run
+    regions:
+      - polygon: [[0, 0], [16, 0], [16, 25], [0, 25]]
+        depth: 1.2
+        movable: true  # the current floor setting comes from the floor controller or the dashboard
+    set_off_time_s: 10  # fixed by the supplier, shown in the interface, not editable by staff
+    standing_depth_m: 1.35
+
+cameras:
+  # Calibrated from at least four surveyed points per camera (pool corners, lane marks):
+  # K from the lens/sensor, R and t from solvePnP (vaktsom.geometry.Camera.from_pnp).
+  - id: idrett-01
+    name: Idrett nordvest
+    url: rtsp://user:password@10.20.0.11/axis-media/media.amp?resolution=1920x1080&fps=10
+    basins: [idrett]
+    size: [1920, 1080]
+    fps: 10
+    K: [[1350.0, 0.0, 960.0], [0.0, 1350.0, 540.0], [0.0, 0.0, 1.0]]
+    R: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    t: [0.0, 0.0, 0.0]
+    water_mask: [[40, 300], [1880, 280], [1900, 1060], [20, 1070]]  # image polygon of the water
+    privacy_masks: []  # e.g. the door to the changing rooms
+
+outputs:
+  - {id: post-idrett, kind: panel, wired: true, basins: [idrett]}
+  - {id: klokker, kind: wearable, wired: false}
+  - {id: sirene-idrett, kind: siren, wired: true, url: "http://10.20.0.50", basins: [idrett],
+     options: {profile: Drukningsalarm, user: vaktsom, password: "change-me", when: escalated}}
+  - {id: sd-anlegg, kind: modbus_coil, wired: true, url: "modbus://10.20.0.60:502", options: {coil: 0, unit: 1}}
+  # the supplier's service desk hears about system faults (detection stopped) at once, over the VPN
+  - {id: leverandor-drift, kind: webhook, wired: true, url: "https://service.example/hook/anlegg", severities: [system]}
+
+escalation:
+  ack_timeout_s: 10
+  pre_alarm_to_alarm_s: 15
+  repeat_s: 20
+
+retention:
+  clip_days: 7
+  log_days: 30

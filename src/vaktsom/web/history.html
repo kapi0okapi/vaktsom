@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="nb">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vaktsom - alarmhistorikk</title>
+<link rel="stylesheet" href="/static/app.css" />
+<style>
+  body { background: var(--paper); height: auto; }
+  main { max-width: 1180px; margin: 0 auto; padding: 28px 16px 48px; }
+  .head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 1.5rem; letter-spacing: -0.01em; }
+  .head .spacer { flex: 1; }
+  .head a { color: var(--ink-2); font-size: 0.9rem; }
+  .cols { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 24px; margin-top: 20px; align-items: start; }
+  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+  .wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { font-weight: 650; color: var(--ink-2); font-size: 0.78rem; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover, tbody tr.sel { background: var(--wash); }
+  .sev { font-weight: 700; }
+  .sev-alarm { color: var(--alarm); }
+  .sev-pre_alarm { color: var(--warn); }
+  .events .to { color: var(--muted); }
+  .events .fail { color: var(--alarm); }
+  .open { color: var(--muted); }
+  .detail { border: 1px solid var(--line); border-radius: 12px; padding: 18px; position: sticky; top: 16px; }
+  .detail h2 { margin: 0 0 4px; font-size: 1.1rem; }
+  .detail .sub { color: var(--muted); font-size: 0.88rem; }
+  .events { margin: 14px 0; padding: 0; list-style: none; font-size: 0.86rem; display: grid; gap: 4px; }
+  .events time { font-family: var(--mono); color: var(--ink-2); margin-right: 8px; }
+  .player img { width: 100%; border-radius: 8px; background: #000; display: block; aspect-ratio: 16 / 9; object-fit: contain; }
+  .player .bar { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; font-size: 0.85rem; }
+  .player .bar .spacer { flex: 1; }
+  .note { color: var(--muted); font-size: 0.85rem; }
+  .outcome { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .outcome input { flex: 1; min-width: 160px; font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="head">
+    <h1>Alarmhistorikk</h1>
+    <span class="spacer"></span>
+    <select id="days" aria-label="Periode">
+      <option value="1">Siste døgn</option>
+      <option value="7" selected>Siste 7 dager</option>
+      <option value="30">Siste 30 dager</option>
+    </select>
+    <a href="/report">Rapport</a>
+    <a href="/">Oversikt</a>
+  </div>
+  <div class="cols">
+    <div class="wrap"><table>
+      <thead><tr><th>Tid</th><th>Basseng</th><th>Hendelse</th><th>Kvittert</th><th>Utfall</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+    <section class="detail" id="detail"><p class="note">Velg en alarm i listen.</p></section>
+  </div>
+</main>
+<script type="module">
+import { T, loadConfig, timeOf, pad } from "/static/common.js";
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const cfg = await loadConfig();
+const basinName = Object.fromEntries(cfg.basins.map((b) => [b.id, b.name]));
+const canClips = ["leder", "admin"].includes(cfg.me.role);
+const dateOf = (ts) => { const d = new Date(ts * 1000); return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}. ${timeOf(ts)}`; };
+const kindText = (a) => `${T.severity[a.severity] || a.severity}: ${T.kind[a.kind] || a.kind}`;
+let player = null;
+$("days").onchange = load;
+load();
+
+async function load() {
+  const since = Date.now() / 1000 - Number($("days").value) * 86400;
+  const rows = await (await fetch(`/api/alarms?since=${since}&limit=1000`)).json();
+  $("rows").innerHTML = "";
+  for (const a of rows) {
+    const tr = document.createElement("tr");
+    const acked = a.ack_at ? `${Math.round(a.ack_at - a.raised_at)} s, ${esc(a.ack_by)}` : "";
+    tr.innerHTML = `<td>${dateOf(a.raised_at)}</td><td>${esc(basinName[a.basin_id] || a.basin_id)}</td>
+      <td class="sev sev-${a.severity}">${kindText(a)}</td><td>${acked}</td>
+      <td class="${a.outcome ? "" : "open"}">${a.outcome ? T.outcome[a.outcome] : "Ikke registrert"}</td>`;
+    tr.onclick = () => { for (const r of $("rows").children) r.classList.remove("sel"); tr.classList.add("sel"); show(a.id); };
+    $("rows").append(tr);
+  }
+  if (!rows.length) $("rows").innerHTML = `<tr><td colspan="5" class="note">Ingen alarmer i perioden.</td></tr>`;
+}
+
+async function show(id) {
+  clearInterval(player);
+  const a = await (await fetch(`/api/alarms/${id}`)).json();
+  const d = $("detail");
+  d.innerHTML = `<h2>${kindText(a)}</h2><div class="sub">${esc(a.detail.label || basinName[a.basin_id])} · ${dateOf(a.raised_at)}</div>
+    <ul class="events">${timeline(a.history)}</ul>
+    <div id="clip"></div><div id="outcome"></div>`;
+  if (!a.clips.length) $("clip").innerHTML = `<p class="note">Klippet er slettet etter ${cfg.retention.clip_days} dager, eller alarmen hadde ikke kamerabilder.</p>`;
+  else if (!canClips) $("clip").innerHTML = `<p class="note">Klipp kan bare ses av ledere.</p>`;
+  else clip(a.clips[0]);
+  if (canClips) {
+    $("outcome").innerHTML = `<div class="outcome"><select id="oc">${Object.entries(T.outcome).map(([k, v]) => `<option value="${k}" ${a.outcome === k ? "selected" : ""}>${v}</option>`).join("")}</select>
+      <input id="ocNote" maxlength="500" placeholder="Notat, for eksempel årsak til falsk alarm" value="${esc(a.note)}" />
+      <button class="btn primary" id="ocSave">Lagre utfall</button></div>`;
+    $("ocSave").onclick = async () => {
+      const r = await fetch(`/api/alarms/${id}/outcome`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ outcome: $("oc").value, note: $("ocNote").value }) });
+      if (r.ok) { await load(); show(id); }
+    };
+  }
+}
+
+// one line per event, with the outputs it reached (and any it could not reach) on the same line
+function timeline(history) {
+  const lines = [];
+  for (const h of history) {
+    if (h.event === "delivered" || h.event === "delivery_failed") {  // belongs to the event it delivered
+      const line = lines.findLast((l) => l.event === h.detail.event);
+      if (line) { (h.event === "delivered" ? line.to : line.failed).push(h.detail.output); continue; }
+    }
+    lines.push({ ts: h.ts, event: h.event, text: eventText(h), to: [], failed: [] });
+  }
+  return lines.map((l) => `<li><time>${timeOf(l.ts)}</time>${l.text}${l.to.length ? ` <span class="to">· sendt til ${l.to.map(esc).join(", ")}</span>` : ""}${l.failed.length ? ` <span class="fail">· ikke levert til ${l.failed.map(esc).join(", ")}</span>` : ""}</li>`).join("");
+}
+
+function eventText(h) {
+  const who = h.actor && h.actor !== "system" ? ` (${esc(h.actor)})` : "";
+  const upgraded = h.detail.kind ? `Oppgradert: ${T.kind[h.detail.kind] || h.detail.kind}` : "Oppgradert til alarm, ikke kvittert";
+  const text = { raised: "Utløst", upgraded, escalated: "Eskalert til alle utganger", repeat: "Gjentatt",
+    acknowledged: "Kvittert", resolved: `Avsluttet: ${T.outcome[h.detail.outcome] || ""}`, received: "Mottatt på enhet",
+    delivered: "Levert", delivery_failed: "Levering feilet", outcome_set: `Utfall satt: ${T.outcome[h.detail.outcome] || ""}` }[h.event] || h.event;
+  return `${text}${who}${h.detail.note ? `: ${esc(h.detail.note)}` : ""}`;
+}
+
+async function clip(clipId) {
+  const r = await fetch(`/api/clips/${clipId}`);  // every view is logged
+  if (!r.ok) { $("clip").innerHTML = `<p class="note">Klippet kan ikke vises.</p>`; return; }
+  const c = await r.json();
+  const cams = Object.keys(c.cameras);
+  let cam = cams[0], k = 0, playing = true;
+  $("clip").innerHTML = `<div class="player"><img id="frame" alt="Alarmklipp" /><div class="bar">
+    <button class="btn small" id="play">Pause</button>${cams.length > 1 ? `<select id="cam">${cams.map((x) => `<option>${esc(x)}</option>`).join("")}</select>` : ""}
+    <span id="pos" class="note"></span><span class="spacer"></span><a class="btn small" href="/api/clips/${clipId}.zip">Last ned</a></div>
+    <p class="note">Visning og nedlasting logges.</p></div>`;
+  const draw = () => {
+    const ts = c.cameras[cam];
+    $("frame").src = `/api/clips/${clipId}/${cam}/${k}.jpg`;
+    $("pos").textContent = `${(ts[k] - ts[0]).toFixed(1).replace(".", ",")} s av ${(ts[ts.length - 1] - ts[0]).toFixed(1).replace(".", ",")} s`;
+  };
+  $("play").onclick = () => { playing = !playing; $("play").textContent = playing ? "Pause" : "Spill av"; };
+  if ($("cam")) $("cam").onchange = () => { cam = $("cam").value; k = 0; draw(); };
+  draw();
+  player = setInterval(() => { if (!playing) return; k = (k + 1) % c.cameras[cam].length; draw(); }, 200);
+}
+</script>
+</body>
+</html>
